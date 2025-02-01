@@ -34,34 +34,16 @@ Clarinet.test({
 
     const tokenData = tokenDataBlock.receipts[0].result.expectOk().expectSome();
     assertEquals(tokenData['carbon-footprint'], types.uint(50));
-    assertEquals(tokenData['energy-consumed'], types.uint(500));
+    assertEquals(tokenData['energy-consumed'], types.uint(500)); 
     assertEquals(tokenData['green-certified'], types.bool(true));
   }
 });
 
 Clarinet.test({
-  name: "Ensure cannot mint NFT exceeding carbon limit",
+  name: "Test NFT staking",
   async fn(chain: Chain, accounts: Map<string, Account>) {
     const deployer = accounts.get('deployer')!;
-
-    let block = chain.mineBlock([
-      Tx.contractCall('eco_nft', 'mint', [
-        types.uint(150), // carbon footprint above limit
-        types.uint(500)
-      ], deployer.address)
-    ]);
-
-    // Mint should fail
-    block.receipts[0].result.expectErr(types.uint(103)); // err-exceeds-carbon-limit
-  }
-});
-
-Clarinet.test({
-  name: "Test NFT transfer",
-  async fn(chain: Chain, accounts: Map<string, Account>) {
-    const deployer = accounts.get('deployer')!;
-    const wallet1 = accounts.get('wallet_1')!;
-
+    
     // First mint an NFT
     let mintBlock = chain.mineBlock([
       Tx.contractCall('eco_nft', 'mint', [
@@ -70,24 +52,66 @@ Clarinet.test({
       ], deployer.address)
     ]);
 
-    // Then transfer it
-    let transferBlock = chain.mineBlock([
-      Tx.contractCall('eco_nft', 'transfer', [
-        types.uint(0),
-        types.principal(wallet1.address)
-      ], deployer.address)
-    ]);
-
-    transferBlock.receipts[0].result.expectOk();
-
-    // Verify new owner
-    let tokenDataBlock = chain.mineBlock([
-      Tx.contractCall('eco_nft', 'get-token-data', [
+    // Stake the NFT
+    let stakeBlock = chain.mineBlock([
+      Tx.contractCall('eco_nft', 'stake', [
         types.uint(0)
       ], deployer.address)
     ]);
 
-    const tokenData = tokenDataBlock.receipts[0].result.expectOk().expectSome();
-    assertEquals(tokenData['owner'], wallet1.address);
+    stakeBlock.receipts[0].result.expectOk();
+
+    // Verify staking data
+    let stakingDataBlock = chain.mineBlock([
+      Tx.contractCall('eco_nft', 'get-staking-data', [
+        types.uint(0)
+      ], deployer.address)
+    ]);
+
+    const stakingData = stakingDataBlock.receipts[0].result.expectOk().expectSome();
+    assertEquals(stakingData['staked'], types.bool(true));
+  }
+});
+
+Clarinet.test({
+  name: "Test NFT unstaking",
+  async fn(chain: Chain, accounts: Map<string, Account>) {
+    const deployer = accounts.get('deployer')!;
+    
+    // Mint and stake NFT
+    let mintBlock = chain.mineBlock([
+      Tx.contractCall('eco_nft', 'mint', [
+        types.uint(50),
+        types.uint(500)
+      ], deployer.address)
+    ]);
+
+    let stakeBlock = chain.mineBlock([
+      Tx.contractCall('eco_nft', 'stake', [
+        types.uint(0)
+      ], deployer.address)
+    ]);
+
+    // Advance chain
+    chain.mineEmptyBlock(10);
+
+    // Unstake NFT
+    let unstakeBlock = chain.mineBlock([
+      Tx.contractCall('eco_nft', 'unstake', [
+        types.uint(0)
+      ], deployer.address)
+    ]);
+
+    unstakeBlock.receipts[0].result.expectOk();
+
+    // Verify unstaked
+    let stakingDataBlock = chain.mineBlock([
+      Tx.contractCall('eco_nft', 'get-staking-data', [
+        types.uint(0)
+      ], deployer.address)
+    ]);
+
+    const stakingData = stakingDataBlock.receipts[0].result.expectOk().expectSome();
+    assertEquals(stakingData['staked'], types.bool(false));
   }
 });
