@@ -8,6 +8,11 @@
 (define-constant err-exceeds-carbon-limit (err u103))
 (define-constant err-already-staked (err u104))
 (define-constant err-not-staked (err u105))
+(define-constant err-invalid-params (err u106))
+(define-constant err-max-supply-reached (err u107))
+(define-constant err-zero-value (err u108))
+(define-constant max-supply u10000)
+(define-constant max-reward-per-block u100)
 
 ;; Define NFT token
 (define-non-fungible-token eco-nft uint)
@@ -15,7 +20,7 @@
 ;; Data Variables
 (define-data-var carbon-limit uint u100)
 (define-data-var total-minted uint u0)
-(define-data-var reward-rate uint u10) ;; Reward tokens per block
+(define-data-var reward-rate uint u10)
 
 ;; Data Maps
 (define-map token-data uint 
@@ -36,6 +41,35 @@
   }
 )
 
+;; Getter Functions
+(define-read-only (get-token-data (token-id uint))
+  (map-get? token-data token-id)
+)
+
+(define-read-only (get-staking-info (token-id uint))
+  (map-get? staking-data token-id)
+)
+
+(define-read-only (get-total-minted)
+  (var-get total-minted)
+)
+
+;; Admin Functions
+(define-public (set-reward-rate (new-rate uint))
+  (begin
+    (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+    (asserts! (<= new-rate max-reward-per-block) err-invalid-params)
+    (var-set reward-rate new-rate)
+    (print { event: "reward-rate-updated", new-rate: new-rate })
+    (ok true)))
+
+(define-public (set-carbon-limit (new-limit uint))
+  (begin
+    (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+    (var-set carbon-limit new-limit)
+    (print { event: "carbon-limit-updated", new-limit: new-limit })
+    (ok true)))
+
 ;; Mint new NFT
 (define-public (mint (carbon-footprint uint) (energy-consumed uint))
   (let
@@ -43,6 +77,9 @@
       (token-id (var-get total-minted))
       (new-total (+ token-id u1))
     )
+    (asserts! (> carbon-footprint u0) err-zero-value)
+    (asserts! (> energy-consumed u0) err-zero-value)
+    (asserts! (< token-id max-supply) err-max-supply-reached)
     (asserts! (<= carbon-footprint (var-get carbon-limit)) err-exceeds-carbon-limit)
     (try! (nft-mint? eco-nft token-id tx-sender))
     (map-set token-data token-id {
@@ -58,100 +95,22 @@
       accumulated-rewards: u0
     })
     (var-set total-minted new-total)
+    (print { event: "nft-minted", token-id: token-id, owner: tx-sender })
     (ok token-id)
-  )
-)
+  ))
 
-;; Stake NFT
-(define-public (stake (token-id uint))
-  (let
-    (
-      (token-owner (get owner (map-get? token-data token-id)))
-      (staking-info (unwrap! (map-get? staking-data token-id) err-token-not-found))
-    )
-    (asserts! (is-eq tx-sender token-owner) err-not-token-owner)
-    (asserts! (not (get staked staking-info)) err-already-staked)
-    (ok (map-set staking-data token-id
-      (merge staking-info
-        {
-          staked: true,
-          stake-time: block-height,
-          accumulated-rewards: u0
-        })))
-  )
-)
-
-;; Unstake NFT and collect rewards
-(define-public (unstake (token-id uint))
-  (let
-    (
-      (token-owner (get owner (map-get? token-data token-id)))
-      (staking-info (unwrap! (map-get? staking-data token-id) err-token-not-found))
-    )
-    (asserts! (is-eq tx-sender token-owner) err-not-token-owner)
-    (asserts! (get staked staking-info) err-not-staked)
-    (let
-      (
-        (rewards (calculate-rewards token-id))
-      )
-      ;; TODO: Add reward token transfer here
-      (ok (map-set staking-data token-id
-        (merge staking-info
-          {
-            staked: false,
-            stake-time: u0,
-            accumulated-rewards: u0
-          })))
-    )
-  )
-)
-
-;; Calculate staking rewards
+;; Calculate staking rewards with safety checks
 (define-private (calculate-rewards (token-id uint))
   (let
     (
       (staking-info (unwrap-panic (map-get? staking-data token-id)))
-      (blocks-staked (- block-height (get stake-time staking-info)))
+      (stake-time (get stake-time staking-info))
+      (blocks-staked (if (>= block-height stake-time)
+        (- block-height stake-time)
+        u0))
     )
-    (* blocks-staked (var-get reward-rate))
-  )
-)
-
-;; Transfer NFT
-(define-public (transfer (token-id uint) (recipient principal))
-  (let
-    (
-      (token-owner (get owner (map-get? token-data token-id)))
-      (staking-info (unwrap! (map-get? staking-data token-id) err-token-not-found))
+    (min
+      (* blocks-staked (var-get reward-rate))
+      (* max-reward-per-block blocks-staked)
     )
-    (asserts! (is-eq tx-sender token-owner) err-not-token-owner)
-    (asserts! (not (get staked staking-info)) err-already-staked)
-    (try! (nft-transfer? eco-nft token-id tx-sender recipient))
-    (ok (map-set token-data token-id
-      (merge (unwrap-panic (map-get? token-data token-id))
-        { owner: recipient })))
-  )
-)
-
-;; Internal function to check if NFT is eco-friendly
-(define-private (is-eco-friendly (carbon uint) (energy uint))
-  (and (<= carbon (var-get carbon-limit))
-       (<= energy u1000))
-)
-
-;; Read only functions
-(define-read-only (get-token-data (token-id uint))
-  (ok (map-get? token-data token-id))
-)
-
-(define-read-only (get-carbon-footprint (token-id uint))
-  (ok (get carbon-footprint (map-get? token-data token-id)))
-)
-
-(define-read-only (is-green-certified (token-id uint))
-  (ok (get green-certified (map-get? token-data token-id)))
-)
-
-(define-read-only (get-staking-data (token-id uint))
-  (ok (map-get? staking-data token-id))
-)
+  ))
